@@ -34,10 +34,12 @@ type LoggerConfig struct {
 	// Optional. Default value is gin.DefaultWriter.
 	Output io.Writer
 
-	// SkipPathes is a url path array which logs are not written.
+	// Skipper is
 	// Optional.
-	SkipPathes []string
+	Skipper LogSkipper
 }
+
+type LogSkipper func(r *http.Request) bool
 
 // LogFormatter gives the signature of the formatter function passed to LoggerWithFormatter
 type LogFormatter func(params LogFormatterParams) string
@@ -111,9 +113,22 @@ func LoggerWithFormatter(f LogFormatter) HandlerFunc {
 // LoggerWithWriter instance a Logger middleware with the specified writer buffer.
 // Example: os.Stdout, a file opened in write mode, a socket...
 func LoggerWithWriter(out io.Writer, notlogged ...string) HandlerFunc {
+	var skip map[string]struct{}
+
+	if length := len(notlogged); length > 0 {
+		skip = make(map[string]struct{}, length)
+
+		for _, path := range notlogged {
+			skip[path] = struct{}{}
+		}
+	}
+
 	return LoggerWithConfig(LoggerConfig{
-		Output:     out,
-		SkipPathes: notlogged,
+		Output: out,
+		Skipper: func(r *http.Request) bool {
+			_, ok := skip[r.URL.Path]
+			return !ok
+		},
 	})
 }
 
@@ -128,7 +143,10 @@ func LoggerWithConfig(conf LoggerConfig) HandlerFunc {
 		out = DefaultWriter
 	}
 
-	notlogged := conf.SkipPathes
+	skipper := conf.Skipper
+	if skipper == nil {
+		skipper = func(*http.Request) bool {}
+	}
 
 	isTerm := true
 
@@ -136,16 +154,6 @@ func LoggerWithConfig(conf LoggerConfig) HandlerFunc {
 		(os.Getenv("TERM") == "dumb" || (!isatty.IsTerminal(w.Fd()) && !isatty.IsCygwinTerminal(w.Fd()))) ||
 		disableColor {
 		isTerm = false
-	}
-
-	var skip map[string]struct{}
-
-	if length := len(notlogged); length > 0 {
-		skip = make(map[string]struct{}, length)
-
-		for _, path := range notlogged {
-			skip[path] = struct{}{}
-		}
 	}
 
 	return func(c *Context) {
@@ -158,7 +166,7 @@ func LoggerWithConfig(conf LoggerConfig) HandlerFunc {
 		c.Next()
 
 		// Log only when path is not being skipped
-		if _, ok := skip[path]; !ok {
+		if skipper(c.Request) {
 			param := LogFormatterParams{
 				Request: c.Request,
 				IsTerm:  isTerm,
